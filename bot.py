@@ -1,6 +1,7 @@
 import os
 import telebot
 from telebot import types
+from gigachat import GigaChat
 import sqlite3
 from datetime import datetime
 import threading
@@ -184,7 +185,12 @@ def get_user_answers_text(telegram_id):
 # BOT SETUP
 # =========================
 
-telegram_token = os.getenv("TG_TOKEN")
+telegram_token = os.getenv("TG_TOKEN", "").strip()
+gigachat_credentials = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
+
+if not telegram_token:
+    raise ValueError("Переменная окружения TG_TOKEN не задана")
+
 bot = telebot.TeleBot(telegram_token, threaded=False)
 
 CHANNEL_USERNAME = "@joinlyclub"
@@ -195,14 +201,35 @@ pending_matches = {}
 
 
 # =========================
-# ANSWER FUNCTION
+# GIGACHAT
 # =========================
 
+SYSTEM_PROMPT = """
+Ты — дружелюбный собеседник для обсуждения книг в телеграм-боте.
+Отвечай тепло, естественно и по-человечески.
+Не повторяй один и тот же шаблон.
+Отвечай кратко: 2–5 предложений.
+Поддерживай разговор по книге, впечатлениям, героям, сюжету и атмосфере.
+В конце можешь задать один уместный уточняющий вопрос, если это помогает продолжить диалог.
+Не упоминай, что ты нейросеть или ИИ, если тебя об этом не спрашивали.
+""".strip()
+
+
 def answer(text):
-    return (
-        "Спасибо, что поделилась. Давай обсудим это подробнее:\n\n"
-        "Что именно в книге зацепило тебя сильнее всего — сюжет, герой, атмосфера или какая-то мысль?"
-    )
+    if not gigachat_credentials:
+        return "Сейчас не настроен GigaChat. Добавь переменную GIGACHAT_CREDENTIALS в Railway."
+
+    prompt = f"{SYSTEM_PROMPT}\n\nСообщение пользователя:\n{text}"
+
+    try:
+        with GigaChat(
+            credentials=gigachat_credentials,
+            verify_ssl_certs=False
+        ) as giga:
+            response = giga.chat(prompt)
+            return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Не получилось обратиться к GigaChat: {e}"
 
 
 # =========================
