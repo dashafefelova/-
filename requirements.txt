@@ -1,8 +1,0 @@
-pyTelegramBotAPI
-pandas
-langchain
-langchain-community
-langchain-chroma
-chromadb
-gigachat
-sentence-transformers
