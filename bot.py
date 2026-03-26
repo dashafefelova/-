@@ -1,10 +1,12 @@
 import os
+import uuid
+import sqlite3
+import threading
+from datetime import datetime, timedelta
+
+import requests
 import telebot
 from telebot import types
-from gigachat import GigaChat
-import sqlite3
-from datetime import datetime
-import threading
 
 # =========================
 # DATABASE / STATS
@@ -187,9 +189,14 @@ def get_user_answers_text(telegram_id):
 
 telegram_token = os.getenv("TG_TOKEN", "").strip()
 gigachat_credentials = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
+gigachat_scope = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip()
+gigachat_model = os.getenv("GIGACHAT_MODEL", "GigaChat").strip()
 
 if not telegram_token:
     raise ValueError("Переменная окружения TG_TOKEN не задана")
+
+if not gigachat_credentials:
+    raise ValueError("Переменная окружения GIGACHAT_CREDENTIALS не задана")
 
 bot = telebot.TeleBot(telegram_token, threaded=False)
 
@@ -198,7 +205,6 @@ CHANNEL_USERNAME = "@libbuddy"
 user_states = {}
 match_requests = []
 pending_matches = {}
-
 
 # =========================
 # GIGACHAT
@@ -214,20 +220,115 @@ SYSTEM_PROMPT = """
 Не упоминай, что ты нейросеть или ИИ, если тебя об этом не спрашивали.
 """.strip()
 
+GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+GIGACHAT_CHAT_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+
+_token_cache = {
+    "access_token": None,
+    "expires_at": None,
+}
+
+
+def build_auth_header_value(raw_credentials: str) -> str:
+    raw = raw_credentials.strip()
+    if not raw:
+        raise ValueError("Пустой GIGACHAT_CREDENTIALS")
+    if raw.lower().startswith("basic "):
+        return raw
+    return f"Basic {raw}"
+
+
+def get_gigachat_token() -> str:
+    global _token_cache
+
+    if (
+        _token_cache["access_token"]
+        and _token_cache["expires_at"]
+        and datetime.now() < _token_cache["expires_at"]
+    ):
+        return _token_cache["access_token"]
+
+    headers = {
+        "Authorization": build_auth_header_value(gigachat_credentials),
+        "RqUID": str(uuid.uuid4()),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+
+    data = {
+        "scope": gigachat_scope
+    }
+
+    response = requests.post(
+        GIGACHAT_OAUTH_URL,
+        headers=headers,
+        data=data,
+        timeout=30,
+        verify=False
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"{response.status_code} {response.url}: {response.text}"
+        )
+
+    payload = response.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise RuntimeError(f"Не удалось получить access_token: {payload}")
+
+    # Берем запасом 25 минут, хотя обычно токен живет около 30 минут
+    _token_cache["access_token"] = access_token
+    _token_cache["expires_at"] = datetime.now() + timedelta(minutes=25)
+
+    return access_token
+
 
 def answer(text):
-    if not gigachat_credentials:
-        return "Сейчас не настроен GigaChat. Добавь переменную GIGACHAT_CREDENTIALS в Railway."
-
-    prompt = f"{SYSTEM_PROMPT}\n\nСообщение пользователя:\n{text}"
+    prompt_text = f"{SYSTEM_PROMPT}\n\nСообщение пользователя:\n{text}"
 
     try:
-        with GigaChat(
-            credentials=gigachat_credentials,
-            verify_ssl_certs=False
-        ) as giga:
-            response = giga.chat(prompt)
-            return response.choices[0].message.content.strip()
+        token = get_gigachat_token()
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        payload = {
+            "model": gigachat_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.8,
+            "top_p": 0.9,
+            "max_tokens": 300,
+            "stream": False,
+        }
+
+        response = requests.post(
+            GIGACHAT_CHAT_URL,
+            headers=headers,
+            json=payload,
+            timeout=60,
+            verify=False
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"{response.status_code} {response.url}: {response.text}"
+            )
+
+        data = response.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise RuntimeError(f"Пустой ответ от GigaChat: {data}")
+
+        content = choices[0]["message"]["content"].strip()
+        return content or "Мне нечего ответить на это прямо сейчас, но давай попробуем переформулировать мысль о книге."
+
     except Exception as e:
         return f"Не получилось обратиться к GigaChat: {e}"
 
@@ -759,4 +860,5 @@ def callback_handler(call):
 
 
 print("Бот готов к работе")
+requests.packages.urllib3.disable_warnings()
 bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20)
