@@ -193,7 +193,7 @@ if not telegram_token:
 
 bot = telebot.TeleBot(telegram_token, threaded=False)
 
-CHANNEL_USERNAME = "@joinlyclub"
+CHANNEL_USERNAME = "@libbuddy"
 
 user_states = {}
 match_requests = []
@@ -274,7 +274,7 @@ def subscribe_markup():
     markup.add(
         types.InlineKeyboardButton(
             "Подписаться на канал",
-            url="https://t.me/joinlyclub"
+            url="https://t.me/libbuddy"
         )
     )
     markup.add(
